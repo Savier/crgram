@@ -1,0 +1,27 @@
+#board-box {
+    width: 1fr;
+    padding: 1 2;
+}
+
+#board {
+    width: auto;
+    height: auto;
+}
+
+#side {
+    width: 40;
+    overflow-y: auto;
+}
+
+.section {
+    height: auto;
+    border: round $panel-lighten-2;
+    border-title-color: $text-muted;
+    padding: 0 1;
+}
+
+#status {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+}

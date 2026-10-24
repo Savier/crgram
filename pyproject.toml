@@ -1,0 +1,41 @@
+[project]
+name = "crgram"
+version = "0.1.0"
+description = "Interactive helper for the Cryptogram puzzle game: reads the board from an Android screen and assists solving"
+readme = "README.md"
+authors = [
+    { name = "Александр Семенов", email = "alevsemenov@cloud.ru" }
+]
+requires-python = ">=3.15"
+dependencies = [
+    "adbutils>=2.12.0",
+    "numpy>=2.5.4",
+    "opencv-python-headless>=5.0.0.93",
+    "platformdirs>=4.13.5",
+    "pydantic>=2.14.1",
+    "textual>=8.2.8",
+]
+
+[project.scripts]
+crgram = "crgram:main"
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.2",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py315"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PL", "N"]
+ignore = ["PLR2004", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLC0415", "N806", "RUF001", "RUF002", "RUF003"]
