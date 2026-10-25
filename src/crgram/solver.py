@@ -36,6 +36,14 @@ class Solver:
     def codes(self) -> list[int]:
         return sorted({c.code for _, _, c in self.board.cells() if c.code is not None})
 
+    def frequency(self) -> list[tuple[int, int]]:
+        """(code, number of cells with it) for every code on the board, most frequent first."""
+        counts: dict[int, int] = {}
+        for _, _, c in self.board.cells():
+            if c.code is not None:
+                counts[c.code] = counts.get(c.code, 0) + 1
+        return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
     def empty_count(self, code: int) -> int:
         """How many cells with this code are still empty in the game."""
         return sum(1 for _, _, c in self.board.cells() if c.kind is CellKind.EMPTY and c.code == code)

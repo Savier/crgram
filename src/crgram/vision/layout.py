@@ -38,6 +38,8 @@ class Slot:
     kind: Literal["box", "glyph", "lock"]
     bbox: BBox
     selected: bool = False
+    # Cut by the screen edge: the cell runs into the plate border, part of it is not visible
+    clipped: bool = False
     glyphs: list[Glyph] = field(default_factory=list)  # letter / punctuation (top band)
     digits: list[Glyph] = field(default_factory=list)  # code digits (bottom band), left to right
     number_gray: Gray | None = None
@@ -144,7 +146,8 @@ def _segment_plate(rgb: np.ndarray, gray: Gray, plate: Plate) -> None:
     nonwhite = top_rgb.min(-1) < 235
     ink = top_gray < DARK_MAX
 
-    runs = [(a, e) for a, e in _runs(nonwhite.any(0)) if a >= edge and e <= b.w - edge]
+    # A run touching the plate border is a cell cut by the screen edge (plates have white margins).
+    runs = [(a, e) for a, e in _runs(nonwhite.any(0)) if e - a >= 0.12 * ph or edge <= a < e <= b.w - edge]
     # Letters like "Ы" consist of separated strokes: merge close ink-only runs.
     gap = int(0.07 * ph)
     merged: list[list[int]] = []
@@ -156,12 +159,22 @@ def _segment_plate(rgb: np.ndarray, gray: Gray, plate: Plate) -> None:
 
     for a, e in merged:
         w = e - a
+        clipped = a < edge or e > b.w - edge
         col = nonwhite[:, a:e]
         rows = np.flatnonzero(col.any(1))
         r0, r1 = rows.min(), rows.max() + 1
         fill = col[r0:r1].mean()
         bbox = BBox(x=b.x + a, y=top0 + int(r0), w=w, h=int(r1 - r0))
-        if w >= 0.35 * ph and fill > 0.7:
+        if clipped:
+            # Too narrow for the width tests: a box is filled solid, a lock is a light outline.
+            if fill > 0.7:
+                slot = Slot("box", bbox)
+            elif _is_lock(col, ink[:, a:e], ph):
+                slot = Slot("lock", bbox)
+            else:
+                slot = Slot("glyph", bbox, glyphs=_split_glyphs(ink[:, a:e], gray, b.x + a, top0, b, gap=gap))
+            slot.clipped = True
+        elif w >= 0.35 * ph and fill > 0.7:
             px = top_rgb[r0:r1, a:e].reshape(-1, 3)
             hsv = cv2.cvtColor(px.astype(np.uint8)[None], cv2.COLOR_RGB2HSV)[0]
             selected = float(np.median(hsv[:, 1])) > 120
@@ -180,6 +193,9 @@ def _segment_plate(rgb: np.ndarray, gray: Gray, plate: Plate) -> None:
             continue
         plate.slots.append(slot)
 
+    boxes = [s.bbox.w for s in plate.slots if s.kind == "box" and not s.clipped]
+    cell_w = int(np.median(boxes)) if boxes else ph // 2
+
     letters = [g.bbox.y + g.bbox.h for s in plate.slots for g in s.glyphs if g.rel_h >= PUNCT_MAX_H]
     plate.baseline = int(np.median(letters)) if letters else b.y + ph // 2
 
@@ -189,7 +205,25 @@ def _segment_plate(rgb: np.ndarray, gray: Gray, plate: Plate) -> None:
         if slot.kind == "lock" or (slot.glyphs and max(g.rel_h for g in slot.glyphs) < PUNCT_MAX_H):
             continue
         x0, x1 = max(slot.bbox.cx - half, b.x + edge), min(slot.bbox.cx + half, b.x + b.w - edge)
+        if slot.clipped:
+            x0, x1 = max(slot.bbox.x - edge, b.x), min(slot.bbox.x + slot.bbox.w + edge, b.x + b.w)
         _read_digits(gray, slot, b, (x0, x1), (bot0, bot1))
+        if slot.clipped and not _code_visible(slot, plate, cell_w):
+            slot.digits, slot.number_gray = [], None
+
+
+def _code_visible(slot: Slot, plate: Plate, cell_w: int) -> bool:
+    """Whether the code under a clipped cell is read whole: no digit touches the cut and the
+    digits are centred where the full cell would be (a digit cut away entirely shifts them)."""
+    if not slot.digits:
+        return False
+    b, s = plate.bbox, slot.bbox
+    m = max(2, b.h // 50)
+    left, right = min(g.bbox.x for g in slot.digits), max(g.bbox.x + g.bbox.w for g in slot.digits)
+    if left <= b.x + m or right >= b.x + b.w - m:
+        return False
+    full_cx = s.x + s.w - cell_w / 2 if s.x - b.x < b.x + b.w - (s.x + s.w) else s.x + cell_w / 2
+    return abs((left + right) / 2 - full_cx) < 0.06 * b.h
 
 
 def _underline_row(rgb: np.ndarray, gray: Gray, b: BBox) -> int | None:
@@ -300,6 +334,15 @@ def _drop_keyboard(cands: list[tuple[int, int, int, int]]) -> list[tuple[int, in
     return [c for i, c in enumerate(cands) if i not in keys]
 
 
+def _drop_scrollbar(white: np.ndarray, max_len: int) -> None:
+    """The game's scrollbar is a white bar through all rows: it would glue their plates into one.
+    No plate is nearly as tall, so white column runs longer than `max_len` are erased."""
+    for x in range(white.shape[1]):
+        for a, e in _runs(white[:, x]):
+            if e - a > max_len:
+                white[a:e, x] = 0
+
+
 def _assign_rows(plates: list[Plate]) -> None:
     plates.sort(key=lambda p: p.bbox.cy)
     row, last = -1, -(10**9)
@@ -319,6 +362,7 @@ def analyze(image_bgr: np.ndarray) -> Layout:
     white = (rgb.min(-1) >= WHITE_MIN).astype(np.uint8)
     # Opening removes thin white rims (cards, icons) while keeping plate margins.
     white = cv2.morphologyEx(white, cv2.MORPH_OPEN, np.ones((7, 7), np.uint8))
+    _drop_scrollbar(white, W // 4)
 
     min_side = W * 0.04
     cands = [

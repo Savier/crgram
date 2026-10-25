@@ -141,3 +141,20 @@ def test_recognize_lock_with_dark_dot(tmp_path):
         "_5 _7 _7 _15 Щ _22 _29 | О7 # _19 У17 | _7 | _5 В12 _7 Е21 _14",
         "_7 _1 _32 _18 _20 _1 _22 _22 .",
     ]
+
+
+def test_recognize_semicolon_and_clipped_row(tmp_path):
+    """`;` is as tall as a letter, but it is two stacked marks: punctuation, not a letter.
+    Row 4 is wider than the screen: its edge cells are kept, the code cut by the scrollbar
+    becomes unknown (a lock) instead of losing the whole word."""
+    board = Recognizer(tmp_path).recognize(load("screen_09.png")).board
+    assert format_board(board).splitlines() == [
+        "*_18 _16 _15 _4 _3 _4 | _27 _29 _6 _4 | _3 _10 _4",
+        "_12 _16 З _3 _29 _8 # _25 _26 И4 _11 | _20 | _26 # Ч13 _16 _6 _25",
+        "_32 _22 _18 _4 ; | _26 _10 | _32 _10 | _3 # _12 _25",
+        "_32 # _10 Д21 _20 _4 _24 _25 _26 _4 _11 | _26 _16 _2 _18 _12 _10 # _26 _4 #",
+        "_3 _10 Е25 | У22 _6 _22 # _8 _16 _6 _10 _2 _30 , | _16",
+        "_26 # _21 Е25 _24 _21 Ы29 | _12 _10 _2 # _4 .",
+    ]
+    clipped = [(wi, ci) for wi, ci, c in board.cells() if c.clipped]
+    assert clipped == [(10, 0), (11, 9)]

@@ -8,7 +8,7 @@ import numpy as np
 from crgram.model import ALPHABET, Board, Cell, CellKind, Word
 from crgram.vision import ocr
 from crgram.vision.glyphs import GlyphBank
-from crgram.vision.layout import PUNCT_MAX_H, Glyph, Slot, analyze
+from crgram.vision.layout import PUNCT_MAX_H, Glyph, Slot, _components, analyze
 
 MAX_CODE = len(ALPHABET)
 SEED_DIR = Path(__file__).parent.parent / "data"
@@ -32,6 +32,21 @@ def _punct_by_shape(g: Glyph, baseline: int) -> str:
     if g.bbox.y + g.bbox.h < baseline - 0.15 * plate_h:
         return "'"
     return "," if h > 1.4 * w else "."
+
+
+def _stacked_punct(g: Glyph) -> str | None:
+    """Tall punctuation (`;` `:` `!`): a narrow glyph of two marks one above the other.
+    It is as high as a letter, but no letter is made of two stacked parts this narrow."""
+    h, w = g.mask.shape
+    if w > 0.12 * h / g.rel_h:
+        return None
+    parts = sorted(_components(g.mask), key=lambda c: c[1])
+    if len(parts) != 2 or parts[0][1] + parts[0][3] > parts[1][1]:
+        return None
+    (_, _, tw, th, _), (_, _, bw, bh, _) = parts
+    if th > 1.4 * tw:
+        return "!"
+    return ";" if bh > 1.4 * bw else ":"
 
 
 class Recognizer:
@@ -73,33 +88,39 @@ class Recognizer:
 
     def _cell(self, slot: Slot, baseline: int) -> tuple[Cell, Glyph | None, bool]:
         code, learned = self._code(slot)
+        clipped = slot.clipped
         match slot.kind:
+            case "box" if code is None:
+                # A cell cut by the screen edge with its code unreadable: like a lock, the code is unknown.
+                return Cell(kind=CellKind.LOCKED, clipped=clipped, bbox=slot.bbox), None, learned
             case "box":
                 return (
                     Cell(
                         kind=CellKind.EMPTY,
                         code=code,
                         selected=slot.selected,
+                        clipped=clipped,
                         bbox=slot.bbox,
                     ),
                     None,
                     learned,
                 )
             case "lock":
-                return Cell(kind=CellKind.LOCKED, bbox=slot.bbox), None, learned
+                return Cell(kind=CellKind.LOCKED, clipped=clipped, bbox=slot.bbox), None, learned
         glyph = max(slot.glyphs, key=lambda g: g.mask.size)
-        if glyph.rel_h < PUNCT_MAX_H:
+        punct = _punct_by_shape(glyph, baseline) if glyph.rel_h < PUNCT_MAX_H else _stacked_punct(glyph)
+        if punct:
             return (
-                Cell(kind=CellKind.PUNCT, letter=_punct_by_shape(glyph, baseline), bbox=slot.bbox),
+                Cell(kind=CellKind.PUNCT, letter=punct, clipped=clipped, bbox=slot.bbox),
                 glyph,
                 learned,
             )
-        letter, verified = self.letters.classify(glyph), True
+        letter, verified = self.letters.classify(glyph), not clipped
         if letter is None:
             letter, verified = ocr.read_char(glyph.gray), False
         kind = CellKind.LETTER if letter is None or letter in ALPHABET else CellKind.PUNCT
         return (
-            Cell(kind=kind, letter=letter, code=code, verified=verified, bbox=slot.bbox),
+            Cell(kind=kind, letter=letter, code=code, verified=verified, clipped=clipped, bbox=slot.bbox),
             glyph,
             learned,
         )

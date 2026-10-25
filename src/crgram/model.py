@@ -38,6 +38,8 @@ class Cell(BaseModel):
     selected: bool = False
     # False when the letter came from a fallback OCR guess and was not confirmed
     verified: bool = True
+    # Partly hidden behind the screen edge: worth checking by hand (not kept in board files)
+    clipped: bool = False
     # Position on the screenshot; absent for boards loaded from a file
     bbox: BBox | None = None
 

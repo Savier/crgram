@@ -6,3 +6,4 @@ __pycache__/
 .crgram-dev/
 .claude/
 /board.toml
+.idea/

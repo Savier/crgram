@@ -74,3 +74,10 @@ def test_lock_opened_by_game_keeps_guess():
     b.words[0].cells[3] = Cell(kind=CellKind.EMPTY, code=7)
     s.update_board(b)
     assert s.guesses == {7: "Ш"} and s.cell_guesses == {}
+
+
+def test_frequency():
+    b = board()
+    b.words[0].cells += [Cell(kind=CellKind.EMPTY, code=3), Cell(kind=CellKind.LETTER, letter="Т", code=2)]
+    s = Solver(b)
+    assert s.frequency() == [(2, 2), (3, 2), (1, 1)]  # ties by code, locks and hidden codes skipped

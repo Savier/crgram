@@ -22,10 +22,14 @@ from crgram.tui import style as st
 from crgram.tui.board import BoardView
 from crgram.vision.recognize import CellRef
 
+FREQUENCY_TOP = 10  # rows in the frequency section
+FREQUENCY_BAR = 20  # width of the longest bar
+
 SECTIONS = [
     ("summary", "Поле"),
     ("placeable", "Можно поставить"),
     ("codes", "Коды"),
+    ("frequency", "Частота"),
     ("letters", "Буквы"),
     ("cell", "Клетка"),
     ("legend", "Обозначения"),
@@ -107,6 +111,9 @@ class CrgramApp(App[None]):
         msg = f"слов: {len(bf.board.words)}, {elapsed:.2f} с"
         if unverified:
             msg += f" · [yellow]непроверенных букв: {unverified}[/] (Enter — верно, или введите правильную)"
+        if clipped := [wi + 1 for wi, w in enumerate(bf.board.words) if any(c.clipped for c in w.cells)]:
+            words = ", ".join(map(str, clipped))
+            msg += f" · [yellow]обрезаны краем экрана слова {words}[/] (проверьте крайние клетки)"
         if not bf.board.words:
             msg = "[red]поле не найдено[/]"
         self._set_status(msg)
@@ -252,27 +259,43 @@ class CrgramApp(App[None]):
             place.append("\n" if i < len(placeable) - 1 else "")
         self._update("placeable", place if placeable else Text("нет", st.EMPTY))
 
-        table = Text()
-        for i, code in enumerate(codes):
-            letter = mapping.get(code)
+        def code_style(code: int) -> str:
             if code in conflicts:
                 style = "bold red"
             elif code in placeable:
                 style = st.PLACEABLE
             elif code in known:
                 style = st.OPEN
-            elif letter:
+            elif code in mapping:
                 style = st.GUESS
             else:
                 style = st.EMPTY
             if cur is not None and cur.code == code:
                 style += " reverse"
+            return style
+
+        table = Text()
+        for i, code in enumerate(codes):
+            letter = mapping.get(code)
+            style = code_style(code)
             table.append(f"{code:>2}", st.CODE)
             table.append(" ")
             table.append(letter or "·", style)
             table.append("\n" if i % 5 == 4 else "  ")
         table.rstrip()
         self._update("codes", table if codes else Text("—", st.EMPTY))
+
+        freq = s.frequency()
+        top = freq[0][1] if freq else 0
+        frequency = Text()
+        for code, n in freq[:FREQUENCY_TOP]:
+            frequency.append(f"{code:>2} ", st.CODE)
+            frequency.append(mapping.get(code, "·"), code_style(code))
+            frequency.append(f" {n:>2} ", "bold")
+            frequency.append("█" * max(1, round(n * FREQUENCY_BAR / top)), st.CODE)
+            frequency.append("\n")
+        frequency.rstrip()
+        self._update("frequency", frequency if freq else Text("—", st.EMPTY))
 
         open_letters = set(known.values()) | s.completed_letters()
         guessed = set(s.guesses.values())
