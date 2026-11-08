@@ -1,10 +1,10 @@
 [project]
 name = "crgram"
-version = "0.1.0"
+version = "0.2.0"
 description = "Interactive helper for the Cryptogram puzzle game: reads the board from an Android screen and assists solving"
 readme = "README.md"
 authors = [
-    { name = "Александр Семенов", email = "alevsemenov@cloud.ru" }
+    { name = "Александр Семенов", email = "iamsav@gmail.com" }
 ]
 requires-python = ">=3.15"
 dependencies = [

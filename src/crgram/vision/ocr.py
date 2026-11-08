@@ -56,11 +56,12 @@ def read_number(gray: np.ndarray) -> int | None:
     return None
 
 
-def read_char(gray: np.ndarray) -> str | None:
+def read_char(gray: np.ndarray, *, letters_only: bool = False) -> str | None:
     """Majority vote over several page segmentation modes: each one misses some letters."""
+    whitelist = ALPHABET if letters_only else ALPHABET + PUNCT
     votes: dict[str, int] = {}
     for psm, scale in ((10, 1.0), (8, 1.0), (8, 2.0), (13, 1.0)):
-        text = _run(gray, psm, ALPHABET + PUNCT, scale=scale).replace(" ", "")
+        text = _run(gray, psm, whitelist, scale=scale).replace(" ", "")
         if len(text) == 1:
             votes[text] = votes.get(text, 0) + 1
     return max(votes, key=votes.__getitem__) if votes else None

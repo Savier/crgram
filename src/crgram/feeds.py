@@ -72,7 +72,7 @@ class FileFeed:
     def load(self) -> BoardFile:
         self._mtime = self._stat()
         try:
-            return boardfile.load(self.path)
+            return boardfile.load(self.path, lenient=True)
         except OSError as e:
             raise SourceError(f"cannot read {self.path}: {e}") from e
 

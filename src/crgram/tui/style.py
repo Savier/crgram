@@ -11,6 +11,7 @@ LOCK_GUESS = "bold magenta underline"  # letter guessed for a lock, applies to t
 CODE_INPUT = "bold black on bright_yellow"
 CONFLICT = "on red"
 SAME_CODE = "on grey23"
+FOUND = "on dark_orange3"  # cells showing the letter being searched for
 CODE = "grey50"
 SELECTED_CODE = "bold green"
 CURSOR = "bold bright_yellow"

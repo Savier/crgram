@@ -134,7 +134,8 @@ def _is_lock(nonwhite: Mask, ink: Mask, ph: int) -> bool:
     return bool(body > 0.02 * ph * ph and ink.sum() < 0.01 * ph * ph)
 
 
-def _segment_plate(rgb: np.ndarray, gray: Gray, plate: Plate) -> None:
+def _segment_plate(rgb: np.ndarray, gray: Gray, plate: Plate, bar: np.ndarray) -> None:
+    """`bar` marks the screen columns of the game's scrollbar, which may be drawn over a cell."""
     b = plate.bbox
     ph = b.h
     top0, top1 = b.y + int(0.02 * ph), b.y + int(0.77 * ph)
@@ -146,20 +147,34 @@ def _segment_plate(rgb: np.ndarray, gray: Gray, plate: Plate) -> None:
     nonwhite = top_rgb.min(-1) < 235
     ink = top_gray < DARK_MAX
 
+    # A cell under the scrollbar is split by it in two: join the halves, part of the cell is hidden.
+    bar = bar[b.x : b.x + b.w]
+    covered: set[int] = set()
+    joined: list[list[int]] = []
+    for a, e in _runs(nonwhite.any(0)):
+        if joined and bar[joined[-1][1] : a].mean() > 0.6:
+            joined[-1][1] = e
+            covered.add(len(joined) - 1)
+        else:
+            joined.append([a, e])
     # A run touching the plate border is a cell cut by the screen edge (plates have white margins).
-    runs = [(a, e) for a, e in _runs(nonwhite.any(0)) if e - a >= 0.12 * ph or edge <= a < e <= b.w - edge]
+    runs = [
+        (a, e, i in covered)
+        for i, (a, e) in enumerate(joined)
+        if e - a >= 0.12 * ph or edge <= a < e <= b.w - edge or i in covered
+    ]
     # Letters like "Ы" consist of separated strokes: merge close ink-only runs.
     gap = int(0.07 * ph)
-    merged: list[list[int]] = []
-    for a, e in runs:
+    merged: list[list] = []
+    for a, e, hidden in runs:
         if merged and a - merged[-1][1] < gap and ink[:, a:e].any() and ink[:, merged[-1][0] : merged[-1][1]].any():
             merged[-1][1] = e
         else:
-            merged.append([a, e])
+            merged.append([a, e, hidden])
 
-    for a, e in merged:
+    for a, e, hidden in merged:
         w = e - a
-        clipped = a < edge or e > b.w - edge
+        clipped = hidden or a < edge or e > b.w - edge
         col = nonwhite[:, a:e]
         rows = np.flatnonzero(col.any(1))
         r0, r1 = rows.min(), rows.max() + 1
@@ -208,21 +223,28 @@ def _segment_plate(rgb: np.ndarray, gray: Gray, plate: Plate) -> None:
         if slot.clipped:
             x0, x1 = max(slot.bbox.x - edge, b.x), min(slot.bbox.x + slot.bbox.w + edge, b.x + b.w)
         _read_digits(gray, slot, b, (x0, x1), (bot0, bot1))
-        if slot.clipped and not _code_visible(slot, plate, cell_w):
+        if slot.clipped and not _code_visible(slot, plate, cell_w, bar):
             slot.digits, slot.number_gray = [], None
 
 
-def _code_visible(slot: Slot, plate: Plate, cell_w: int) -> bool:
-    """Whether the code under a clipped cell is read whole: no digit touches the cut and the
-    digits are centred where the full cell would be (a digit cut away entirely shifts them)."""
+def _code_visible(slot: Slot, plate: Plate, cell_w: int, bar: np.ndarray) -> bool:
+    """Whether the code under a clipped cell is read whole: no digit touches the cut or the
+    scrollbar, and the digits are centred where the full cell would be (a digit cut away
+    entirely shifts them). `bar` is relative to the plate."""
     if not slot.digits:
         return False
     b, s = plate.bbox, slot.bbox
     m = max(2, b.h // 50)
     left, right = min(g.bbox.x for g in slot.digits), max(g.bbox.x + g.bbox.w for g in slot.digits)
-    if left <= b.x + m or right >= b.x + b.w - m:
+    if left <= b.x + m or right >= b.x + b.w - m or bar[max(0, left - m - b.x) : right + m - b.x].any():
         return False
-    full_cx = s.x + s.w - cell_w / 2 if s.x - b.x < b.x + b.w - (s.x + s.w) else s.x + cell_w / 2
+    edge = max(3, int(0.04 * b.h))
+    if s.x - b.x < edge:
+        full_cx = s.x + s.w - cell_w / 2
+    elif b.x + b.w - (s.x + s.w) < edge:
+        full_cx = s.x + cell_w / 2
+    else:  # under the scrollbar: the whole width is known
+        full_cx = s.cx
     return abs((left + right) / 2 - full_cx) < 0.06 * b.h
 
 
@@ -334,13 +356,20 @@ def _drop_keyboard(cands: list[tuple[int, int, int, int]]) -> list[tuple[int, in
     return [c for i, c in enumerate(cands) if i not in keys]
 
 
-def _drop_scrollbar(white: np.ndarray, max_len: int) -> None:
+def _drop_scrollbar(white: np.ndarray, max_len: int) -> np.ndarray:
     """The game's scrollbar is a white bar through all rows: it would glue their plates into one.
-    No plate is nearly as tall, so white column runs longer than `max_len` are erased."""
+    No plate is nearly as tall, so white column runs longer than `max_len` are erased, except
+    where the white is wide (a plate margin the bar crosses), not to cut the plate in two.
+    Returns the columns of the bar."""
+    width = max(15, white.shape[1] // 60)
+    wide = cv2.morphologyEx(white, cv2.MORPH_OPEN, np.ones((1, width), np.uint8)).astype(bool)
+    bar = np.zeros(white.shape[1], bool)
     for x in range(white.shape[1]):
         for a, e in _runs(white[:, x]):
             if e - a > max_len:
-                white[a:e, x] = 0
+                white[a:e, x] &= wide[a:e, x]
+                bar[x] = True
+    return bar
 
 
 def _assign_rows(plates: list[Plate]) -> None:
@@ -362,7 +391,7 @@ def analyze(image_bgr: np.ndarray) -> Layout:
     white = (rgb.min(-1) >= WHITE_MIN).astype(np.uint8)
     # Opening removes thin white rims (cards, icons) while keeping plate margins.
     white = cv2.morphologyEx(white, cv2.MORPH_OPEN, np.ones((7, 7), np.uint8))
-    _drop_scrollbar(white, W // 4)
+    bar = _drop_scrollbar(white, W // 4)
 
     min_side = W * 0.04
     cands = [
@@ -387,7 +416,7 @@ def analyze(image_bgr: np.ndarray) -> Layout:
             if (line_y := _underline_row(rgb, gray, bbox)) is not None:
                 _segment_underlined(rgb, gray, plate, line_y)
             else:
-                _segment_plate(rgb, gray, plate)
+                _segment_plate(rgb, gray, plate, bar)
             if plate.slots:
                 plates.append(plate)
         elif 0.55 * plate_h <= h < plate_h and _is_dotted_frame(gray, x, y, w, h):

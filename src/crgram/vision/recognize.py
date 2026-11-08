@@ -35,18 +35,21 @@ def _punct_by_shape(g: Glyph, baseline: int) -> str:
 
 
 def _stacked_punct(g: Glyph) -> str | None:
-    """Tall punctuation (`;` `:` `!`): a narrow glyph of two marks one above the other.
-    It is as high as a letter, but no letter is made of two stacked parts this narrow."""
+    """Tall punctuation (`;` `:` `!` `?`): two marks one above the other, as high as a letter.
+    `;` `:` are a narrow dot over a dot or comma; `!` `?` are a stroke or hook over a small dot
+    (Ё, Й have the small part on top)."""
     h, w = g.mask.shape
-    if w > 0.12 * h / g.rel_h:
-        return None
     parts = sorted(_components(g.mask), key=lambda c: c[1])
     if len(parts) != 2 or parts[0][1] + parts[0][3] > parts[1][1]:
         return None
     (_, _, tw, th, _), (_, _, bw, bh, _) = parts
-    if th > 1.4 * tw:
-        return "!"
-    return ";" if bh > 1.4 * bw else ":"
+    if th <= 1.4 * tw and th < 0.3 * h:  # a dot on top
+        if w > 0.12 * h / g.rel_h:
+            return None
+        return ";" if bh > 1.4 * bw else ":"
+    if bh <= 1.4 * bw and bh < 0.3 * h:  # a dot below
+        return "!" if tw <= th / 3 else "?"
+    return None
 
 
 class Recognizer:
@@ -117,8 +120,11 @@ class Recognizer:
             )
         letter, verified = self.letters.classify(glyph), not clipped
         if letter is None:
-            letter, verified = ocr.read_char(glyph.gray), False
+            # Letter-sized and not stacked marks: a letter, even if OCR sees punctuation in it (В as ":").
+            letter, verified = ocr.read_char(glyph.gray, letters_only=True), False
+            letter = letter or ocr.read_char(glyph.gray)  # no letter in it: maybe punctuation after all
         kind = CellKind.LETTER if letter is None or letter in ALPHABET else CellKind.PUNCT
+        verified = verified or kind is CellKind.PUNCT  # punctuation is not confirmed in the TUI
         return (
             Cell(kind=kind, letter=letter, code=code, verified=verified, clipped=clipped, bbox=slot.bbox),
             glyph,

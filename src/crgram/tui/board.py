@@ -22,6 +22,8 @@ WORD_GAP = 3
 _LATIN = "qwertyuiop[]asdfghjkl;'zxcvbnm,.`"
 _CYR = "йцукенгшщзхъфывапролджэячсмитьбюё"
 LATIN_TO_CYR = str.maketrans(_LATIN + _LATIN.upper(), _CYR + _CYR.upper())
+# Punctuation that can fix a misrecognized open cell (`,` `.` `;` are letters on the Latin layout).
+PUNCT_KEYS = "?!:-"
 
 
 @dataclass
@@ -39,7 +41,8 @@ class BoardView(Widget, can_focus=True):
         Binding("right", "move(1)", "→", show=False),
         Binding("up", "move_line(-1)", "↑", show=False),
         Binding("down", "move_line(1)", "↓", show=False),
-        Binding("tab", "next_empty", "След. пустая"),
+        Binding("tab", "next_lock(1)", "След. замок"),
+        Binding("shift+tab", "next_lock(-1)", "Пред. замок", show=False),
         Binding("backspace,delete", "erase", "Стереть"),
         Binding("enter", "confirm", "Подтвердить"),
         Binding("escape", "cancel_code", "Отмена ввода кода", show=False),
@@ -78,6 +81,7 @@ class BoardView(Widget, can_focus=True):
         self._pos: dict[CellRef, _Pos] = {}
         self._order: list[CellRef] = []
         self.code_buffer = ""  # digits typed for the cursor cell, applied by Enter
+        self.highlight: str | None = None  # letter whose cells are highlighted (search)
 
     # --- layout -------------------------------------------------------------
 
@@ -116,12 +120,39 @@ class BoardView(Widget, can_focus=True):
         cell = self._cell(ref)
         return cell.kind is CellKind.EMPTY and cell.code is not None and self.solver.letter_for(cell.code)[0] is None
 
+    def shown_letter(self, ref: CellRef) -> str | None:
+        """Letter the cell shows: open, known from its code, guessed, or guessed for a lock."""
+        cell = self._cell(ref)
+        match cell.kind:
+            case CellKind.LETTER:
+                return cell.letter
+            case CellKind.LOCKED:
+                return self.solver.cell_guesses.get(ref)
+            case CellKind.EMPTY if cell.code is not None:
+                return self.solver.mapping().get(cell.code)
+        return None
+
+    def matches(self, letter: str) -> list[CellRef]:
+        return [r for r in self._order if self.shown_letter(r) == letter]
+
+    def find(self, letter: str) -> None:
+        """Highlight the cells showing `letter` and move to the next one."""
+        found = self.matches(letter)
+        if found:
+            self.cursor = self._next(lambda r: r in found, self.cursor)
+        self.highlight = letter
+        self.refresh()
+
     def _first_empty(self, after: CellRef | None = None) -> CellRef | None:
-        start = self._order.index(after) + 1 if after in self._pos else 0
+        return self._next(self._is_open, after)
+
+    def _next(self, wanted, after: CellRef | None = None, step: int = 1) -> CellRef | None:
+        """First cell after `after` (cyclically, backwards for `step=-1`) satisfying `wanted`."""
         n = len(self._order)
+        start = self._order.index(after) + step if after in self._pos else (0 if step > 0 else n - 1)
         for i in range(n):
-            ref = self._order[(start + i) % n]
-            if self._is_open(ref):
+            ref = self._order[(start + i * step) % n]
+            if wanted(ref):
                 return ref
         return None
 
@@ -160,7 +191,8 @@ class BoardView(Widget, can_focus=True):
                         bottom.append(" ")
                         continue
                     if word.hint:
-                        top.append(f"{c.letter:^{CELL_W}}", st.HINT)
+                        hint_style = st.HINT + (" " + st.FOUND if c.letter == self.highlight else "")
+                        top.append(f"{c.letter:^{CELL_W}}", hint_style)
                         bottom.append(" " * CELL_W)
                         continue
                     letter, style = "·", st.EMPTY
@@ -175,7 +207,9 @@ class BoardView(Widget, can_focus=True):
                         case CellKind.EMPTY if c.code in mapping:
                             letter = mapping[c.code]
                             style = st.PLACEABLE if c.code in known else st.GUESS
-                    if c.code is not None and c.code in conflicts:
+                    if self.highlight and letter == self.highlight:
+                        style += " " + st.FOUND
+                    elif c.code is not None and c.code in conflicts:
                         style += " " + st.CONFLICT
                     elif c.code is not None and c.code == cur_code and style != st.PLACEABLE:
                         style += " " + st.SAME_CODE
@@ -209,12 +243,14 @@ class BoardView(Widget, can_focus=True):
         self.post_message(self.CursorMoved())
 
     def action_move(self, delta: int) -> None:
+        self.highlight = None
         if not self._order:
             return
         i = self._order.index(self.cursor) if self.cursor in self._pos else 0
         self.cursor = self._order[(i + delta) % len(self._order)]
 
     def action_move_line(self, delta: int) -> None:
+        self.highlight = None
         if self.cursor not in self._pos:
             return
         here = self._pos[self.cursor]
@@ -228,8 +264,9 @@ class BoardView(Widget, can_focus=True):
             key=lambda r: abs(self._pos[r].col - here.col),
         )
 
-    def action_next_empty(self) -> None:
-        if ref := self._first_empty(self.cursor):
+    def action_next_lock(self, step: int) -> None:
+        self.highlight = None
+        if ref := self._next(lambda r: self._cell(r).kind is CellKind.LOCKED, self.cursor, step):
             self.cursor = ref
 
     def action_erase(self) -> None:
@@ -258,8 +295,8 @@ class BoardView(Widget, can_focus=True):
         self.post_message(self.CursorMoved())
 
     def on_key(self, event: Key) -> None:
-        if self.cursor not in self._pos:
-            return
+        if self.cursor not in self._pos or "ctrl+" in event.key:
+            return  # Ctrl+letter on the Russian layout may carry the letter itself: it is an app shortcut
         raw = event.character or ""
         if raw.isdigit() and len(raw) == 1:
             event.stop()
@@ -270,6 +307,11 @@ class BoardView(Widget, can_focus=True):
             event.stop()
             self._set_buffer("")
             self.post_message(self.CodeEntered(self.cursor, None))
+            return
+        if len(raw) == 1 and raw in PUNCT_KEYS and self._cell(self.cursor).kind is CellKind.LETTER:
+            event.stop()
+            self._set_buffer("")
+            self.post_message(self.Typed(self.cursor, raw))
             return
         ch = raw.translate(LATIN_TO_CYR).upper()
         if len(ch) == 1 and ch in ALPHABET:

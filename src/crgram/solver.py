@@ -138,12 +138,27 @@ class Solver:
             if letter and code not in self.mapping():
                 self.guesses[code] = letter
 
-    def replace_guesses(self, guesses: dict[int, str], cell_guesses: dict[CellRef, str] | None = None) -> None:
+    def set_letter(self, ref: CellRef, letter: str) -> None:
+        """Correct (or confirm) a recognized open symbol; punctuation makes the cell a PUNCT one."""
+        wi, ci = ref
+        cell = self.board.words[wi].cells[ci]
+        if cell.letter == letter and cell.verified:
+            return
+        self._remember()
+        cell.letter, cell.verified = letter, True
+        if letter not in ALPHABET:
+            cell.kind, cell.code = CellKind.PUNCT, None
+
+    def replace_guesses(
+        self, guesses: dict[int, str], cell_guesses: dict[CellRef, str] | None = None, *, remember: bool = True
+    ) -> None:
+        """`remember=False` for guesses loaded with the board: undo must not go back to none."""
         known = self.known()
         new = {code: ch for code, ch in guesses.items() if code not in known}
         new_cells = self._locked_only(cell_guesses or {})
         if new != self.guesses or new_cells != self.cell_guesses:
-            self._remember()
+            if remember:
+                self._remember()
             self.guesses, self.cell_guesses = new, new_cells
 
     def clear(self) -> None:

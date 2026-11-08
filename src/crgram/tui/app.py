@@ -40,12 +40,13 @@ class CrgramApp(App[None]):
     TITLE = "crgram"
     CSS_PATH = "app.tcss"
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("ctrl+r,f5", "rescan", "Обновить"),
+        # The same keys on the Russian layout (ЙЦУКЕН positions), for terminals that report them so.
+        Binding("ctrl+r,ctrl+к,f5", "rescan", "Обновить"),
         Binding("f6", "toggle_watch", "Авто-обновление"),
-        Binding("ctrl+z", "undo", "Отменить"),
-        Binding("ctrl+l", "clear", "Сбросить догадки"),
-        Binding("ctrl+s", "save", "Сохранить"),
-        Binding("ctrl+q", "quit", "Выход"),
+        Binding("ctrl+z,ctrl+я", "undo", "Отменить"),
+        Binding("ctrl+l,ctrl+д", "clear", "Сбросить догадки"),
+        Binding("ctrl+s,ctrl+ы", "save", "Сохранить"),
+        Binding("ctrl+q,ctrl+й", "quit", "Выход"),
     ]
 
     def __init__(self, feed: Feed, save_path: Path, watch: float = 0) -> None:
@@ -105,7 +106,7 @@ class CrgramApp(App[None]):
         self._loading = False
         self.solver.update_board(bf.board)
         if bf.guesses or bf.lock_guesses:
-            self.solver.replace_guesses(bf.guesses, bf.lock_guesses)
+            self.solver.replace_guesses(bf.guesses, bf.lock_guesses, remember=False)
         self.query_one(BoardView).board_changed()
         unverified = sum(1 for _, _, c in bf.board.cells() if not c.verified)
         msg = f"слов: {len(bf.board.words)}, {elapsed:.2f} с"
@@ -114,6 +115,9 @@ class CrgramApp(App[None]):
         if clipped := [wi + 1 for wi, w in enumerate(bf.board.words) if any(c.clipped for c in w.cells)]:
             words = ", ".join(map(str, clipped))
             msg += f" · [yellow]обрезаны краем экрана слова {words}[/] (проверьте крайние клетки)"
+        if bf.problems:
+            more = f" (и ещё {len(bf.problems) - 1})" if len(bf.problems) > 1 else ""
+            msg += f" · [red]ошибка в файле: {bf.problems[0]}{more}[/] — клетка показана как есть, поправьте"
         if not bf.board.words:
             msg = "[red]поле не найдено[/]"
         self._set_status(msg)
@@ -155,14 +159,23 @@ class CrgramApp(App[None]):
 
     def _set_letter(self, ref: CellRef, letter: str) -> None:
         """Fix a recognized letter on the board and teach the recognizer when possible."""
-        cell = self._cell(ref)
         learned = self.feed.learn(ref, letter)
-        cell.letter, cell.verified = letter, True
-        self.notify(f"Буква «{letter}»" + (" запомнена" if learned else " исправлена"))
+        self.solver.set_letter(ref, letter)
+        if self._cell(ref).kind is CellKind.PUNCT:
+            self.query_one(BoardView).board_changed()
+        self.notify(f"Символ «{letter}»" + (" запомнен" if learned else " исправлен"))
 
     def on_board_view_typed(self, msg: BoardView.Typed) -> None:
         board = self.query_one(BoardView)
         cell = self._cell(msg.ref)
+        board.highlight = None
+        if self._is_search(msg.ref, msg.letter):
+            # The letter is already there: show where instead of assigning it again.
+            if cell.kind is CellKind.LETTER and not cell.verified:
+                self._set_letter(msg.ref, msg.letter)
+            board.find(msg.letter)
+            self._changed()
+            return
         match cell.kind:
             case CellKind.LETTER:
                 self._set_letter(msg.ref, msg.letter)
@@ -185,7 +198,24 @@ class CrgramApp(App[None]):
                 board.advance()
         self._changed()
 
+    def _is_search(self, ref: CellRef, letter: str) -> bool:
+        """Typing a letter that is already on the board looks for it, unless that is an edit:
+        a guess for an unknown code (the letter is only guessed elsewhere), a fix of an
+        unconfirmed letter, a letter for a lock, or a correction to a letter not on the board."""
+        board = self.query_one(BoardView)
+        cell = self._cell(ref)
+        if board.shown_letter(ref) == letter:
+            return True
+        if letter not in ALPHABET or cell.kind is CellKind.LOCKED:
+            return False
+        if cell.kind is CellKind.EMPTY and cell.code not in self.solver.known():
+            return letter in set(self.solver.known().values()) | self.solver.completed_letters()
+        if cell.kind is CellKind.LETTER and not cell.verified:
+            return False
+        return bool(board.matches(letter))
+
     def on_board_view_erased(self, msg: BoardView.Erased) -> None:
+        self.query_one(BoardView).highlight = None
         cell = self._cell(msg.ref)
         if cell.kind is CellKind.LOCKED:
             self.solver.assign_cell(msg.ref, None)
@@ -194,6 +224,7 @@ class CrgramApp(App[None]):
         self._changed()
 
     def on_board_view_code_entered(self, msg: BoardView.CodeEntered) -> None:
+        self.query_one(BoardView).highlight = None
         was_locked = self._cell(msg.ref).kind is CellKind.LOCKED
         self.solver.set_code(msg.ref, msg.code)
         if msg.code is None:
@@ -337,6 +368,11 @@ class CrgramApp(App[None]):
                 info.append("новый код: ", st.CODE)
                 info.append(f" {board.code_buffer}▏", st.CODE_INPUT)
                 info.append("  Enter / Esc\n", st.CODE)
+            if board.highlight:
+                n = len(board.matches(board.highlight))
+                info.append("поиск ", st.CODE)
+                info.append(f" {board.highlight} ", st.FOUND)
+                info.append(f": клеток {n}, та же буква — дальше\n", st.CODE)
             pattern = s.pattern(board.cursor[0])
             info.append("слово: ", st.CODE)
             info.append(pattern, "bold")
@@ -357,6 +393,7 @@ class CrgramApp(App[None]):
             (" ▒ ", st.LOCKED, "замок (# — поставить)"),
             (" А ", st.LOCK_GUESS, "буква в замке"),
             (" А ", "bold " + st.CONFLICT, "конфликт"),
+            (" А ", "bold " + st.FOUND, "найдена (буква с поля)"),
         ]:
             legend.append(sample, style)
             legend.append(f" {label}\n", st.CODE)

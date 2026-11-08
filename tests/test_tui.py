@@ -80,8 +80,85 @@ def test_lock_editing(tmp_path):
             assert cell.code == 17 and app.solver.guesses == {17: "Ш"}
             board.cursor = (0, 0)
             await pilot.press("#")
+            await pilot.press("tab")  # the only lock now: the cursor stays on it
+            assert board.cursor == (0, 0)
             await pilot.press("ctrl+s")
             await pilot.pause()
 
     asyncio.run(scenario())
     assert boardfile.format_board(boardfile.load(path).board) == "# _17 _2"
+
+
+def test_tab_jumps_between_locks(tmp_path):
+    path = tmp_path / "b.toml"
+    path.write_text('board = """\n*_1 # _2 | Т3 # , | #\n"""\n', encoding="utf-8")
+
+    async def scenario() -> None:
+        app = CrgramApp(FileFeed(path), path)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            board = app.query_one(BoardView)
+            visited = []
+            for _ in range(4):
+                await pilot.press("tab")
+                visited.append(board.cursor)
+            assert visited == [(0, 1), (1, 1), (2, 0), (0, 1)]  # punctuation skipped, wraps around
+            back = []
+            for _ in range(3):
+                await pilot.press("shift+tab")
+                back.append(board.cursor)
+            assert back == [(2, 0), (1, 1), (0, 1)]  # backwards, wrapping to the last lock
+
+    asyncio.run(scenario())
+
+
+def test_typing_open_letter_finds_it(tmp_path):
+    path = tmp_path / "b.toml"
+    path.write_text('board = """\n*_1 Т2 _3 | _2 Т | _4\n"""\n', encoding="utf-8")
+
+    async def scenario() -> None:
+        app = CrgramApp(FileFeed(path), path)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            board = app.query_one(BoardView)
+            assert board.cursor == (0, 0)
+            await pilot.press("т")  # "Т" is open: not a guess, a search
+            assert app.solver.guesses == {}
+            assert board.highlight == "Т" and board.cursor == (0, 1)
+            await pilot.press("т", "т", "т")  # (1, 0) is empty with known code 2, then wraps around
+            assert board.cursor == (0, 1)
+            await pilot.press("right")
+            assert board.highlight is None
+            await pilot.press("о")  # a new letter is still a guess
+            assert app.solver.guesses == {3: "О"} and board.highlight is None
+
+    asyncio.run(scenario())
+
+
+def test_open_letter_search_undo_and_russian_shortcuts(tmp_path):
+    path = tmp_path / "b.toml"
+    path.write_text('board = """\nР1 О2 Г?3 | _4 Р1\n"""\n[guesses]\n4 = "А"\n', encoding="utf-8")
+
+    async def scenario() -> None:
+        app = CrgramApp(FileFeed(path), path)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            board = app.query_one(BoardView)
+            cells = app.solver.board.words[0].cells
+            board.cursor = (0, 1)
+            await pilot.press("р")  # "Р" is on the board: a search, the open "О" stays
+            assert cells[1].letter == "О" and board.highlight == "Р" and board.cursor == (1, 1)
+            board.cursor = (0, 2)
+            await pilot.press("ф")  # an unconfirmed letter is corrected
+            assert cells[2].letter == "Ф" and cells[2].verified
+            await pilot.press("ctrl+я")  # undo on the Russian layout: the letter comes back...
+            assert app.solver.board.words[0].cells[2].letter == "Г"
+            assert app.solver.guesses == {4: "А"}  # ...and the guesses loaded with the board stay
+            await pilot.press("ctrl+ы")
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    assert path.read_text(encoding="utf-8").startswith("# crgram board")  # saved by Ctrl+S on the Russian layout

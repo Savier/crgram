@@ -6,6 +6,7 @@ screen row, words separated by `|`, cells by spaces:
     _16     empty cell with code 16          *_16   the cell selected in the game
     Т20     open letter with its code        Д      open letter, code hidden
     Т?20    letter recognized by OCR, not confirmed
+    _?      open symbol that was not recognized at all (type the right one in the TUI)
     #       locked cell                      , . — ! ?   punctuation
     [ОБЩЕСТВЕННЫМ]   a whole word given as a hint
 
@@ -41,6 +42,8 @@ class BoardFile:
     guesses: dict[int, str] = field(default_factory=dict)
     source: str | None = None
     lock_guesses: dict[tuple[int, int], str] = field(default_factory=dict)  # (word, cell), 0-based
+    # Errors skipped by a lenient load: the rest of the file is still usable
+    problems: list[str] = field(default_factory=list)
 
 
 # --- writing -------------------------------------------------------------------
@@ -107,6 +110,8 @@ def parse_cell(token: str) -> Cell:
             return Cell(kind=CellKind.PUNCT, letter=token)
         raise BoardFormatError(f"непонятная клетка {token!r}")
     selected, letter, unverified, code = m.groups()
+    if letter == "_" and code is None and unverified:
+        return Cell(kind=CellKind.LETTER, verified=False)
     if letter == "_" and code is None:
         raise BoardFormatError(f"у пустой клетки {token!r} нет кода")
     return Cell(
@@ -118,7 +123,8 @@ def parse_cell(token: str) -> Cell:
     )
 
 
-def parse_word(text: str, row: int) -> Word:
+def parse_word(text: str, row: int, problems: list[str] | None = None) -> Word:
+    """With `problems`, a bad cell is kept as its raw text (shown as punctuation) and reported there."""
     text = text.strip()
     if text.startswith("[") and text.endswith("]"):
         cells = [
@@ -127,24 +133,44 @@ def parse_word(text: str, row: int) -> Word:
             if not ch.isspace()
         ]
         return Word(cells=cells, row=row, hint=True)
-    return Word(cells=[parse_cell(t) for t in text.split()], row=row)
+    cells = []
+    for token in text.split():
+        try:
+            cells.append(parse_cell(token))
+        except BoardFormatError as e:
+            if problems is None:
+                raise
+            problems.append(str(e))
+            cells.append(Cell(kind=CellKind.PUNCT, letter=token))
+    return Word(cells=cells, row=row)
 
 
-def parse_board(text: str) -> Board:
+def parse_board(text: str, problems: list[str] | None = None) -> Board:
     words: list[Word] = []
     row = 0
     for lineno, line in enumerate(text.splitlines(), 1):
         if not line.strip():
             continue
+        found: list[str] | None = None if problems is None else []
         try:
-            words += [parse_word(part, row) for part in line.split(WORD_SEP) if part.strip()]
+            words += [parse_word(part, row, found) for part in line.split(WORD_SEP) if part.strip()]
         except BoardFormatError as e:
             raise BoardFormatError(f"строка {lineno}: {e}") from None
+        if problems is not None and found:
+            problems += [f"строка {lineno}: {p}" for p in found]
         row += 1
     return Board(words=words)
 
 
-def loads(text: str) -> BoardFile:
+def loads(text: str, *, lenient: bool = False) -> BoardFile:
+    """Strict by default; `lenient` skips bad cells, guesses and locks, listing them in `problems`."""
+    problems: list[str] = []
+
+    def bad(message: str) -> None:
+        if not lenient:
+            raise BoardFormatError(message)
+        problems.append(message)
+
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
@@ -154,9 +180,10 @@ def loads(text: str) -> BoardFile:
     guesses = {}
     for code, letter in data.get("guesses", {}).items():
         if not code.isdigit() or not isinstance(letter, str) or letter.upper() not in ALPHABET:
-            raise BoardFormatError(f"догадка {code} = {letter!r}")
+            bad(f"догадка {code} = {letter!r}")
+            continue
         guesses[int(code)] = letter.upper()
-    board = parse_board(data["board"])
+    board = parse_board(data["board"], problems if lenient else None)
     locks = {}
     for key, letter in data.get("locks", {}).items():
         wi, _, ci = key.partition(".")
@@ -166,10 +193,11 @@ def loads(text: str) -> BoardFile:
         else:
             ok = False
         if not ok:
-            raise BoardFormatError(f"замок {key} = {letter!r}: нет такой клетки-замка или не буква")
+            bad(f"замок {key} = {letter!r}: нет такой клетки-замка или не буква")
+            continue
         locks[(int(wi) - 1, int(ci) - 1)] = letter.upper()
-    return BoardFile(board, guesses, data.get("source"), locks)
+    return BoardFile(board, guesses, data.get("source"), locks, problems)
 
 
-def load(path: Path) -> BoardFile:
-    return loads(path.read_text(encoding="utf-8"))
+def load(path: Path, *, lenient: bool = False) -> BoardFile:
+    return loads(path.read_text(encoding="utf-8"), lenient=lenient)

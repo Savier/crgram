@@ -158,3 +158,23 @@ def test_recognize_semicolon_and_clipped_row(tmp_path):
     ]
     clipped = [(wi, ci) for wi, ci, c in board.cells() if c.clipped]
     assert clipped == [(10, 0), (11, 9)]
+
+
+@pytest.mark.skipif(not ocr.available(), reason="tesseract is needed for the uncertain letter")
+def test_uncertain_letter_stays_letter(tmp_path):
+    """В scores just below the threshold and goes to OCR, which may read it as ":": a letter-sized
+    glyph must stay a letter with its code, so it can be confirmed in the TUI."""
+    board = Recognizer(tmp_path).recognize(load("screen_10.png")).board
+    for wi in (0, 11):
+        cell = board.words[wi].cells[0]
+        assert (cell.kind, cell.code, cell.verified) == (CellKind.LETTER, 26, False)
+
+
+def test_recognize_question_mark_near_scrollbar(tmp_path):
+    """`?` is told by shape (a hook over a dot); the last word of row 5 ends right at the scrollbar,
+    which must not cut the plate and hide the code of its last letter."""
+    board = Recognizer(tmp_path).recognize(load("screen_11.png")).board
+    lines = format_board(board).splitlines()
+    assert lines[4].endswith("| _2 _31 _24 А26")
+    assert lines[5] == "А26 Ш _30 _27 _31 _32 ?"
+    assert not any(c.clipped for _, _, c in board.cells())

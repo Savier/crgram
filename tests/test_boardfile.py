@@ -66,3 +66,20 @@ def test_lock_guesses_roundtrip():
     assert boardfile.loads(boardfile.dumps(bf)).lock_guesses == {(0, 1): "Ш"}
     with pytest.raises(BoardFormatError, match=r"замок 1\.1"):
         boardfile.loads('board = """\n_1 # _2\n"""\n[locks]\n"1.1" = "ш"\n')
+
+
+def test_unrecognized_symbol_roundtrip():
+    """`_?` is an open symbol recognition could not read: no code, fixed by hand in the TUI."""
+    cell = boardfile.loads('board = """\n_1 _?\n"""').board.words[0].cells[1]
+    assert (cell.kind, cell.letter, cell.code, cell.verified) == (CellKind.LETTER, None, None, False)
+    assert boardfile.format_cell(cell) == "_?"
+
+
+def test_lenient_load_keeps_the_rest():
+    text = 'board = """\n_1 Q2 _3\n"""\n[guesses]\n1 = "О"\n3 = "1"\n'
+    with pytest.raises(BoardFormatError):
+        boardfile.loads(text)
+    bf = boardfile.loads(text, lenient=True)
+    assert boardfile.format_board(bf.board) == "_1 Q2 _3"  # the bad cell is kept as is
+    assert bf.guesses == {1: "О"}
+    assert bf.problems == ["догадка 3 = '1'", "строка 1: непонятная клетка 'Q2'"]
