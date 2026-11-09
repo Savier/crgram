@@ -191,8 +191,7 @@ class BoardView(Widget, can_focus=True):
                         bottom.append(" ")
                         continue
                     if word.hint:
-                        hint_style = st.HINT + (" " + st.FOUND if c.letter == self.highlight else "")
-                        top.append(f"{c.letter:^{CELL_W}}", hint_style)
+                        top.append(f"{c.letter:^{CELL_W}}", st.HINT)
                         bottom.append(" " * CELL_W)
                         continue
                     letter, style = "·", st.EMPTY

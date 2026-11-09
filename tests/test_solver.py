@@ -81,3 +81,13 @@ def test_frequency():
     b.words[0].cells += [Cell(kind=CellKind.EMPTY, code=3), Cell(kind=CellKind.LETTER, letter="Т", code=2)]
     s = Solver(b)
     assert s.frequency() == [(2, 2), (3, 2), (1, 1)]  # ties by code, locks and hidden codes skipped
+
+
+def test_accept_placeable():
+    b = board()
+    b.words[0].cells.append(Cell(kind=CellKind.EMPTY, code=2))  # "Т" is known: placeable
+    s = Solver(b)
+    assert s.accept_placeable() == 1
+    assert s.placeable() == {} and s.board.words[0].cells[-1].letter == "Т"
+    assert s.accept_placeable() == 0
+    assert s.undo() and s.placeable() == {2: ("Т", 1)}

@@ -43,6 +43,7 @@ class CrgramApp(App[None]):
         # The same keys on the Russian layout (ЙЦУКЕН positions), for terminals that report them so.
         Binding("ctrl+r,ctrl+к,f5", "rescan", "Обновить"),
         Binding("f6", "toggle_watch", "Авто-обновление"),
+        Binding("ctrl+a,ctrl+ф", "accept", "Принять зелёные"),
         Binding("ctrl+z,ctrl+я", "undo", "Отменить"),
         Binding("ctrl+l,ctrl+д", "clear", "Сбросить догадки"),
         Binding("ctrl+s,ctrl+ы", "save", "Сохранить"),
@@ -58,6 +59,8 @@ class CrgramApp(App[None]):
         self._watch_timer: Timer | None = None
         self._loading = False
         self._watch_on = bool(watch)
+        # Correction of a confidently recognized letter waiting for the same key once more
+        self._pending_fix: tuple[CellRef, str] | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -169,6 +172,7 @@ class CrgramApp(App[None]):
         board = self.query_one(BoardView)
         cell = self._cell(msg.ref)
         board.highlight = None
+        pending, self._pending_fix = self._pending_fix, None
         if self._is_search(msg.ref, msg.letter):
             # The letter is already there: show where instead of assigning it again.
             if cell.kind is CellKind.LETTER and not cell.verified:
@@ -177,6 +181,13 @@ class CrgramApp(App[None]):
             self._changed()
             return
         match cell.kind:
+            case CellKind.LETTER if cell.verified and pending != (msg.ref, msg.letter):
+                # A stray key must not teach the recognizer a wrong sample: ask to repeat it.
+                self._pending_fix = (msg.ref, msg.letter)
+                self.notify(
+                    f"«{cell.letter}» распознана уверенно. Исправить на «{msg.letter}» — нажмите её ещё раз",
+                    severity="warning",
+                )
             case CellKind.LETTER:
                 self._set_letter(msg.ref, msg.letter)
             case CellKind.EMPTY if cell.code in self.solver.known():
@@ -199,17 +210,15 @@ class CrgramApp(App[None]):
         self._changed()
 
     def _is_search(self, ref: CellRef, letter: str) -> bool:
-        """Typing a letter that is already on the board looks for it, unless that is an edit:
-        a guess for an unknown code (the letter is only guessed elsewhere), a fix of an
-        unconfirmed letter, a letter for a lock, or a correction to a letter not on the board."""
+        """Typing a letter already shown on the board (open or guessed) looks for it, except for
+        a fix of an unconfirmed letter and a letter for a lock. To move a guess to another code,
+        erase it first."""
         board = self.query_one(BoardView)
         cell = self._cell(ref)
         if board.shown_letter(ref) == letter:
             return True
         if letter not in ALPHABET or cell.kind is CellKind.LOCKED:
             return False
-        if cell.kind is CellKind.EMPTY and cell.code not in self.solver.known():
-            return letter in set(self.solver.known().values()) | self.solver.completed_letters()
         if cell.kind is CellKind.LETTER and not cell.verified:
             return False
         return bool(board.matches(letter))
@@ -248,6 +257,14 @@ class CrgramApp(App[None]):
     def action_undo(self) -> None:
         if self.solver.undo():
             self._changed()
+
+    def action_accept(self) -> None:
+        """The green letters are placed in the game: show them as open ones."""
+        if n := self.solver.accept_placeable():
+            self.notify(f"Приняты зелёные буквы: клеток {n}")
+            self._changed()
+        else:
+            self.notify("Зелёных букв нет")
 
     def action_clear(self) -> None:
         self.solver.clear()

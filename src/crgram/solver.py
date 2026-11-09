@@ -57,6 +57,17 @@ class Solver:
                 out[code] = (letter, n)
         return out
 
+    def accept_placeable(self) -> int:
+        """Treat the placeable cells as filled in the game: they become open letters.
+        Returns how many cells changed."""
+        known = self.known()
+        cells = [c for _, _, c in self.board.cells() if c.kind is CellKind.EMPTY and c.code in known]
+        if cells:
+            self._remember()
+        for c in cells:
+            c.kind, c.letter, c.verified = CellKind.LETTER, known[c.code], True  # type: ignore[index]
+        return len(cells)
+
     def unknown_codes(self) -> list[int]:
         m = self.mapping()
         return [code for code in self.codes() if code not in m]
